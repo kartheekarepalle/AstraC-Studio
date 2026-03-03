@@ -309,21 +309,6 @@ int main() {
     printf("\n");
     return 0;
 }
-```
-
-### User Input (uses Stdin panel)
-```c
-#include <stdio.h>
-
-int main() {
-    int n;
-    printf("Enter a number: ");
-    scanf("%d", &n);
-    printf("Square: %d\n", n * n);
-    return 0;
-}
-```
-
 ---
 
 ## Development
