@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+venv/
+.env
+
+# Node
+node_modules/
+frontend/dist/
+
+# MinGW (large toolchain - users download separately)
+mingw64/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Compiled binaries
+*.exe
+*.o
+*.out
+*.obj
+
+# Temp
+*.tmp
+*.log
