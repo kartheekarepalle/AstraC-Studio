@@ -19,11 +19,14 @@ class TACInterpreter:
 
     MAX_STEPS = 50000  # safety limit
 
-    def __init__(self, tac_lines):
+    def __init__(self, tac_lines, stdin_text=''):
         self.lines = tac_lines
         self.funcs = {}       # name -> (param_names, start_idx)
         self.stdout = []
         self.steps = 0
+        # stdin buffer: split by whitespace for scanf tokens
+        self.stdin_tokens = stdin_text.split() if stdin_text.strip() else []
+        self.stdin_pos = 0
         self._parse_functions()
 
     # ── parse function boundaries ────────────────────────────────────
@@ -187,6 +190,8 @@ class TACInterpreter:
     def _handle_call(self, fn, raw_args, env):
         if fn == 'printf':
             return self._do_printf(raw_args, env)
+        if fn == 'scanf':
+            return self._do_scanf(raw_args, env)
         # user-defined function
         args = self._split_args(raw_args)
         arg_vals = [self._eval(a.strip(), env) for a in args]
@@ -228,6 +233,56 @@ class TACInterpreter:
                 seen.add(p)
                 params.append(p)
         return params[:n_args]
+
+    # ── scanf implementation ─────────────────────────────────────────
+    def _do_scanf(self, raw_args, env):
+        args = self._split_args(raw_args)
+        if not args:
+            return 0
+        fmt = args[0].strip()
+        if fmt.startswith('"') and fmt.endswith('"'):
+            fmt = fmt[1:-1]
+        # collect target variable names (strip & prefix)
+        targets = []
+        for a in args[1:]:
+            a = a.strip()
+            if a.startswith('&'):
+                a = a[1:].strip()
+            targets.append(a)
+        # parse format specifiers to know how to convert
+        specs = re.findall(r'%([difcslu]*)', fmt)
+        count = 0
+        for i, spec in enumerate(specs):
+            if i >= len(targets):
+                break
+            var = targets[i]
+            if self.stdin_pos < len(self.stdin_tokens):
+                tok = self.stdin_tokens[self.stdin_pos]
+                self.stdin_pos += 1
+                if spec in ('d', 'i', 'ld', 'u', 'lu'):
+                    try:
+                        env[var] = int(tok)
+                    except ValueError:
+                        env[var] = 0
+                elif spec in ('f', 'lf'):
+                    try:
+                        env[var] = float(tok)
+                    except ValueError:
+                        env[var] = 0.0
+                elif spec == 'c':
+                    env[var] = ord(tok[0]) if tok else 0
+                elif spec == 's':
+                    env[var] = tok
+                else:
+                    try:
+                        env[var] = int(tok)
+                    except ValueError:
+                        env[var] = 0
+                count += 1
+            else:
+                # no more stdin, leave variable at its current value
+                break
+        return count
 
     # ── printf implementation ────────────────────────────────────────
     def _do_printf(self, raw_args, env):
@@ -434,6 +489,7 @@ class handler(BaseHTTPRequestHandler):
             data = json.loads(body)
 
             source = data.get('source', '')
+            stdin_text = data.get('stdin', '')
             if not source.strip():
                 self._json_response(400, {'error': 'No source code provided'})
                 return
@@ -444,7 +500,7 @@ class handler(BaseHTTPRequestHandler):
             # Execute via TAC interpreter (no GCC needed)
             tac = pipeline_result.get('optimized_ir') or pipeline_result.get('ir') or []
             if tac and not pipeline_result.get('errors'):
-                interp = TACInterpreter(tac)
+                interp = TACInterpreter(tac, stdin_text=stdin_text)
                 runtime = interp.run()
             else:
                 runtime = {
