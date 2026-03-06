@@ -454,6 +454,7 @@ class handler(BaseHTTPRequestHandler):
                     'execution_time_ms': None,
                 }
 
+            pipeline_result['runtime'] = runtime
             self._json_response(200, pipeline_result)
         except Exception as e:
             self._json_response(500, {'error': str(e)})
