@@ -1,0 +1,17 @@
+mingw64/
+node_modules/
+__pycache__/
+*.pyc
+*.exe
+.git/
+test_*.py
+test_*.txt
+docs/
+docker/
+/src/
+scripts/
+tools/
+tests/
+*.spec
+venv/
+.env
