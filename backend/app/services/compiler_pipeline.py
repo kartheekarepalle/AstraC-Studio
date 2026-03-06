@@ -1150,13 +1150,30 @@ class _TACGen:
     def _func(self, name):
         self.tac.append(f'FUNC_BEGIN {name}')
         self._eat()  # (
-        d = 1
-        while d > 0 and self._cur()[0] != 'EOF':
-            if self._cur()[0] == 'LPAREN':
-                d += 1
-            elif self._cur()[0] == 'RPAREN':
-                d -= 1
+        params = []
+        while self._cur()[0] != 'EOF' and self._cur()[0] != 'RPAREN':
+            if self._cur()[0] == 'KEYWORD' and self._cur()[1] in self.TYPE_KW:
+                while self._cur()[0] == 'KEYWORD' and self._cur()[1] in self.TYPE_KW:
+                    self._eat()
+                while self._cur()[1] == '*':
+                    self._eat()
+                if self._match('ID'):
+                    pname = self._eat()[1]
+                    params.append(pname)
+                    if self._match('LBRACK'):
+                        self._eat()
+                        if not self._match('RBRACK'):
+                            self._eat()
+                        if self._match('RBRACK'):
+                            self._eat()
+            elif self._match('COMMA'):
+                self._eat()
+            else:
+                self._eat()
+        if self._match('RPAREN'):
             self._eat()
+        for p in params:
+            self.tac.append(f'PARAM {p}')
         if self._match('LBRACE'):
             self._block()
         self.tac.append(f'FUNC_END {name}')
@@ -1241,7 +1258,20 @@ class _TACGen:
             return
         if c[0] == 'ID':
             nm = self._eat()[1]
-            if self._cur()[1] == '=':
+            if self._match('LBRACK'):
+                self._eat()  # [
+                idx = self._cuntil('RBRACK')
+                self._eat()  # ]
+                if self._cur()[1] == '=':
+                    self._eat()
+                    v = self._collect_expr()
+                    self.tac.append(f'{nm} [ {idx} ] = {v}')
+                elif self._cur()[1] in ('++', '--'):
+                    op = self._eat()[1]
+                    t = self._nt()
+                    self.tac.append(f'{t} = {nm} [ {idx} ] {op[0]} 1')
+                    self.tac.append(f'{nm} [ {idx} ] = {t}')
+            elif self._cur()[1] == '=':
                 self._eat()
                 v = self._collect_expr()
                 self.tac.append(f'{nm} = {v}')
@@ -1336,6 +1366,27 @@ class _TACGen:
                     self.tac.append(f'{tmp} = CALL {fn}({args})')
                     parts.append(tmp)
                     continue
+            # Handle array subscript: arr[index] as a single operand
+            if t[0] == 'LBRACK' and parts:
+                last = parts[-1] if parts else ''
+                if isinstance(last, str) and re.match(r'^[a-zA-Z_]\w*$', str(last)):
+                    arr_name = parts.pop()
+                    self._eat()  # [
+                    idx_parts = []
+                    depth = 1
+                    while depth > 0 and self._cur()[0] != 'EOF':
+                        if self._cur()[0] == 'LBRACK':
+                            depth += 1
+                        elif self._cur()[0] == 'RBRACK':
+                            depth -= 1
+                            if depth == 0:
+                                self._eat()  # ]
+                                break
+                        idx_parts.append(self._cur()[1])
+                        self._eat()
+                    idx_expr = ' '.join(idx_parts)
+                    parts.append(f'{arr_name} [ {idx_expr} ]')
+                    continue
             parts.append(t[1])
             self._eat()
         if len(parts) >= 3:
@@ -1350,23 +1401,32 @@ class _TACGen:
         return ' '.join(str(p) for p in parts)
 
     def _linearize(self, parts):
-        ops = {'+', '-', '*', '/', '%', '<', '>', '==', '!=', '<=', '>=', '&&', '||'}
-        res = []
+        # Process operators by precedence (highest first)
+        for op_set in [{'*', '/', '%'}, {'+', '-'},
+                       {'<', '>', '<=', '>=', '==', '!='},
+                       {'&&', '||'}]:
+            parts = self._linearize_pass(parts, op_set)
+        if len(parts) == 1:
+            return str(parts[0])
+        return ' '.join(str(p) for p in parts)
+
+    def _linearize_pass(self, parts, ops):
+        if len(parts) < 3:
+            return parts
+        new_parts = []
         i = 0
-        lt = None
         while i < len(parts):
-            p = str(parts[i])
-            if p in ops and i > 0 and i < len(parts) - 1:
-                l = lt or (res.pop() if res else str(parts[i - 1]))
-                r = str(parts[i + 1])
+            if i > 0 and i < len(parts) - 1 and str(parts[i]) in ops:
+                left = new_parts.pop() if new_parts else parts[i - 1]
+                right = parts[i + 1]
                 t = self._nt()
-                self.tac.append(f'{t} = {l} {p} {r}')
-                lt = t
+                self.tac.append(f'{t} = {left} {parts[i]} {right}')
+                new_parts.append(t)
                 i += 2
-                continue
-            res.append(p)
-            i += 1
-        return lt or ' '.join(res)
+            else:
+                new_parts.append(parts[i])
+                i += 1
+        return new_parts
 
     def _cargs(self):
         self._eat()  # (
@@ -1533,7 +1593,8 @@ def phase_optimization(tac_lines):
 
         # -- other control flow: copy as-is --
         if (line.startswith('GOTO ') or line.startswith('IF_FALSE')
-                or line.startswith('RETURN') or line.startswith('DECL ')):
+                or line.startswith('RETURN') or line.startswith('DECL ')
+                or line.startswith('PARAM ')):
             optimized.append(raw_line)
             continue
 
@@ -1788,6 +1849,10 @@ def phase_codegen(tac_lines):
         if line.startswith('DECL'):
             var = line[4:].strip()
             asm += [f'    ; declare {var}', f'    SUB SP, 4  ; alloc {var}']
+            continue
+        if line.startswith('PARAM'):
+            var = line[5:].strip()
+            asm.append(f'    ; param {var}')
             continue
 
         cm = re.match(r'CALL\s+(\w+)\((.*)?\)', line)

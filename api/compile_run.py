@@ -36,17 +36,24 @@ class TACInterpreter:
             m = re.match(r'FUNC_BEGIN\s+(\w+)', self.lines[i])
             if m:
                 fname = m.group(1)
-                # scan backward from current func to find param decls
-                # params appear as PARAM lines or extracted from source
-                # In our TAC, params are just used as names inside the func
                 start = i + 1
-                # find FUNC_END
                 end = start
                 while end < len(self.lines) and not re.match(r'FUNC_END\s+' + fname, self.lines[end]):
                     end += 1
+                # extract PARAM declarations
+                params = []
+                body_start = start
+                for j in range(start, end):
+                    pm = re.match(r'^PARAM\s+(\w+)$', self.lines[j].strip())
+                    if pm:
+                        params.append(pm.group(1))
+                        body_start = j + 1
+                    else:
+                        break
                 self.funcs[fname] = {
-                    'body': self.lines[start:end],
+                    'body': self.lines[body_start:end],
                     'name': fname,
+                    'params': params,
                 }
             i += 1
 
@@ -172,6 +179,18 @@ class TACInterpreter:
                 pc += 1
                 continue
 
+            # ── arr[idx] = expr ──
+            arrs = re.match(r'^(\w+)\s*\[\s*(.+?)\s*\]\s*=\s*(.+)$', line)
+            if arrs:
+                arr_name = arrs.group(1)
+                idx = int(self._eval(arrs.group(2), env))
+                val = self._eval(arrs.group(3), env)
+                if arr_name not in env or not isinstance(env[arr_name], dict):
+                    env[arr_name] = {}
+                env[arr_name][idx] = val
+                pc += 1
+                continue
+
             # ── var = expr ──
             am = re.match(r'^(\w+)\s*=\s*(.+)$', line)
             if am:
@@ -197,7 +216,10 @@ class TACInterpreter:
         arg_vals = [self._eval(a.strip(), env) for a in args]
         # find param names from function body usage
         if fn in self.funcs:
-            param_names = self._infer_params(fn, len(arg_vals))
+            func = self.funcs[fn]
+            param_names = func.get('params', [])
+            if not param_names:
+                param_names = self._infer_params(fn, len(arg_vals))
             args_map = {}
             for i, pname in enumerate(param_names):
                 args_map[pname] = arg_vals[i] if i < len(arg_vals) else 0
@@ -261,23 +283,33 @@ class TACInterpreter:
                 self.stdin_pos += 1
                 if spec in ('d', 'i', 'ld', 'u', 'lu'):
                     try:
-                        env[var] = int(tok)
+                        val = int(tok)
                     except ValueError:
-                        env[var] = 0
+                        val = 0
                 elif spec in ('f', 'lf'):
                     try:
-                        env[var] = float(tok)
+                        val = float(tok)
                     except ValueError:
-                        env[var] = 0.0
+                        val = 0.0
                 elif spec == 'c':
-                    env[var] = ord(tok[0]) if tok else 0
+                    val = ord(tok[0]) if tok else 0
                 elif spec == 's':
-                    env[var] = tok
+                    val = tok
                 else:
                     try:
-                        env[var] = int(tok)
+                        val = int(tok)
                     except ValueError:
-                        env[var] = 0
+                        val = 0
+                # check if target is array element: arr [ expr ]
+                arm = re.match(r'^(\w+)\s*\[\s*(.+?)\s*\]$', var)
+                if arm:
+                    arr_name = arm.group(1)
+                    idx = int(self._eval(arm.group(2), env))
+                    if arr_name not in env or not isinstance(env[arr_name], dict):
+                        env[arr_name] = {}
+                    env[arr_name][idx] = val
+                else:
+                    env[var] = val
                 count += 1
             else:
                 # no more stdin, leave variable at its current value
@@ -338,7 +370,10 @@ class TACInterpreter:
                     continue
                 elif spec == 's':
                     v = vals[vi] if vi < len(vals) else ''
-                    output.append(str(v))
+                    s = str(v)
+                    if s.startswith('"') and s.endswith('"'):
+                        s = s[1:-1]
+                    output.append(s)
                     vi += 1
                     i += 2
                     continue
@@ -396,28 +431,88 @@ class TACInterpreter:
         if re.match(r'^[a-zA-Z_]\w*$', expr):
             return self._resolve(expr, env)
 
-        # binary operation: a op b
-        # try to match: operand op operand
-        bm = re.match(r'^(.+?)\s+([\+\-\*/%]|==|!=|<=|>=|<|>|&&|\|\||\||&|<<|>>)\s+(.+)$', expr)
-        if bm:
-            left = self._eval(bm.group(1), env)
-            op = bm.group(2)
-            right = self._eval(bm.group(3), env)
+        # precedence-aware binary operator split (must come before array access
+        # so that "arr [ j ] > arr [ j + 1 ]" splits at ">" not as array access)
+        split = self._find_binary_split(expr)
+        if split:
+            left_str, op, right_str = split
+            left = self._eval(left_str, env)
+            right = self._eval(right_str, env)
             return self._binop(left, op, right)
+
+        # array access: name [ expr ]
+        arm = re.match(r'^(\w+)\s*\[\s*(.+?)\s*\]$', expr)
+        if arm:
+            arr_name = arm.group(1)
+            idx = int(self._eval(arm.group(2), env))
+            arr = env.get(arr_name)
+            if isinstance(arr, dict):
+                return arr.get(idx, 0)
+            return 0
 
         # unary: !expr
         if expr.startswith('!'):
             return int(not self._eval(expr[1:], env))
 
-        # unary: -expr
-        if expr.startswith('-') and not expr[1:].strip()[0].isdigit():
-            return -self._eval(expr[1:], env)
+        # unary: -expr (handles "- 42" with space)
+        if expr.startswith('-'):
+            return -self._eval(expr[1:].strip(), env)
 
         # fallback: try resolving as a variable
         if re.match(r'^[a-zA-Z_]\w*$', expr.strip()):
             return self._resolve(expr.strip(), env)
 
         return 0
+
+    def _find_binary_split(self, expr):
+        """Find the lowest-precedence binary operator at the top level
+        (not inside brackets or quotes). Returns (left, op, right) or None."""
+        prec_levels = [
+            ['||'], ['&&'],
+            ['==', '!='], ['<=', '>=', '<', '>'],
+            ['+', '-'],
+            ['*', '/', '%'],
+            ['<<', '>>'],
+            ['|'], ['&'],
+        ]
+        for ops in prec_levels:
+            best_pos = -1
+            best_op = None
+            depth = 0
+            in_str = False
+            i = 0
+            while i < len(expr):
+                ch = expr[i]
+                if ch == '"' and (i == 0 or expr[i-1] != '\\'):
+                    in_str = not in_str
+                    i += 1
+                    continue
+                if in_str:
+                    i += 1
+                    continue
+                if ch == '[':
+                    depth += 1
+                    i += 1
+                    continue
+                if ch == ']':
+                    depth -= 1
+                    i += 1
+                    continue
+                if depth == 0:
+                    for op in sorted(ops, key=lambda x: -len(x)):
+                        if expr[i:i+len(op)] == op:
+                            if (i > 0 and expr[i-1] == ' ' and
+                                    i + len(op) < len(expr) and
+                                    expr[i+len(op)] == ' '):
+                                best_pos = i
+                                best_op = op
+                i += 1
+            if best_pos >= 0:
+                left = expr[:best_pos].strip()
+                right = expr[best_pos + len(best_op):].strip()
+                if left and right:
+                    return (left, best_op, right)
+        return None
 
     def _resolve(self, name, env):
         if name in env:
