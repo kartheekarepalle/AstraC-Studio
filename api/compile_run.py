@@ -139,7 +139,7 @@ class TACInterpreter:
         # build label index
         labels = {}
         for i, line in enumerate(body):
-            lm = re.match(r'^(L\d+):$', line)
+            lm = re.match(r'^(L\d+\w*):$', line)
             if lm:
                 labels[lm.group(1)] = i
 
@@ -155,7 +155,7 @@ class TACInterpreter:
                 continue
 
             # ── Label ──
-            if re.match(r'^L\d+:$', line):
+            if re.match(r'^L\d+\w*:$', line):
                 pc += 1
                 continue
 
@@ -175,7 +175,7 @@ class TACInterpreter:
                 return 0
 
             # ── GOTO label ──
-            gm = re.match(r'^GOTO\s+(L\d+)$', line)
+            gm = re.match(r'^GOTO\s+(L\d+\w*)$', line)
             if gm:
                 lbl = gm.group(1)
                 if lbl in labels:
@@ -185,7 +185,7 @@ class TACInterpreter:
                 continue
 
             # ── IF_FALSE cond GOTO label ──
-            ifm = re.match(r'^IF_FALSE\s+(.+?)\s+GOTO\s+(L\d+)$', line)
+            ifm = re.match(r'^IF_FALSE\s+(.+?)\s+GOTO\s+(L\d+\w*)$', line)
             if ifm:
                 cond_str = ifm.group(1)
                 lbl = ifm.group(2)
@@ -444,9 +444,12 @@ class TACInterpreter:
                         i += 3
                         continue
                 elif spec == '.' or spec == '-' or spec.isdigit():
-                    # %.Nf, %Nd, %-Nd etc.
+                    # %.Nf, %Nd, %-Nd, %.2lf etc.
                     j = i + 1
                     while j < len(fmt) and (fmt[j] in '.-+' or fmt[j].isdigit()):
+                        j += 1
+                    # skip length modifiers like 'l', 'h', 'll', 'hh'
+                    while j < len(fmt) and fmt[j] in 'lhLqjzt':
                         j += 1
                     if j < len(fmt) and fmt[j] in 'diouxXfFeEgGcs':
                         type_ch = fmt[j]
@@ -611,6 +614,24 @@ class TACInterpreter:
     def _resolve(self, name, env):
         if name in env:
             return env[name]
+        # built-in constants
+        _CONSTANTS = {
+            'DBL_MAX': 1.7976931348623157e+308,
+            'DBL_MIN': 2.2250738585072014e-308,
+            'FLT_MAX': 3.4028235e+38,
+            'FLT_MIN': 1.175494e-38,
+            'INT_MAX': 2147483647,
+            'INT_MIN': -2147483648,
+            'LONG_MAX': 9223372036854775807,
+            'LONG_MIN': -9223372036854775808,
+            'CHAR_MAX': 127,
+            'CHAR_MIN': -128,
+            'true': 1, 'TRUE': 1,
+            'false': 0, 'FALSE': 0,
+            'NULL': 0,
+        }
+        if name in _CONSTANTS:
+            return _CONSTANTS[name]
         return 0
 
     def _binop(self, l, op, r):

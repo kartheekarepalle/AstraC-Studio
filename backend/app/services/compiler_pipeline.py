@@ -98,7 +98,7 @@ PHASE2_DESC = (
 )
 
 
-def _nd(label, value='', left=None, right=None):
+def _nd(label, value='', left=None, right=None, children=None):
     """Create a tree node with explicit left/right children."""
     n = {'label': label}
     if value:
@@ -107,6 +107,8 @@ def _nd(label, value='', left=None, right=None):
         n['left'] = left
     if right is not None:
         n['right'] = right
+    if children is not None:
+        n['children'] = children
     return n
 
 
@@ -275,6 +277,8 @@ class _Parser:
                 self._eat()
                 self._eat('SEMICOLON')
                 return _nd(kw.capitalize() + 'Stmt')
+            if kw == 'switch':
+                return self._switch()
             if kw in self.TYPE_KW:
                 return self._local_decl()
         if c[0] == 'LBRACE':
@@ -345,6 +349,45 @@ class _Parser:
         self._eat('RPAREN')
         self._eat('SEMICOLON')
         return _nd('DoWhileStmt', '', left=body, right=cond)
+
+    def _switch(self):
+        self._eat('KEYWORD')  # switch
+        self._eat('LPAREN')
+        expr = self._expression()
+        self._eat('RPAREN')
+        self._eat('LBRACE')
+        cases = []
+        default = None
+        while not self._match('RBRACE') and self._cur()[0] != 'EOF':
+            if self._match('KEYWORD', 'case'):
+                self._eat()
+                val = self._expression()
+                self._eat('COLON')
+                stmts = []
+                while (not self._match('KEYWORD', 'case')
+                       and not self._match('KEYWORD', 'default')
+                       and not self._match('RBRACE')
+                       and self._cur()[0] != 'EOF'):
+                    stmts.append(self._statement())
+                cases.append(_nd('Case', '', left=val,
+                                 right=_nd('Body', '', children=[s for s in stmts if s])))
+            elif self._match('KEYWORD', 'default'):
+                self._eat()
+                self._eat('COLON')
+                stmts = []
+                while (not self._match('KEYWORD', 'case')
+                       and not self._match('RBRACE')
+                       and self._cur()[0] != 'EOF'):
+                    stmts.append(self._statement())
+                default = _nd('Default', '', children=[s for s in stmts if s])
+            else:
+                self._eat()
+        if self._match('RBRACE'):
+            self._eat()
+        node = _nd('SwitchStmt', '', left=expr)
+        node['cases'] = cases
+        node['default'] = default
+        return node
 
     def _stmt_or_block(self):
         if self._match('LBRACE'):
@@ -904,6 +947,9 @@ _STDLIB = {
     'pow', 'sqrt', 'sin', 'cos', 'tan', 'log', 'exp', 'ceil', 'floor',
     'calloc', 'realloc', 'qsort', 'bsearch', 'isalpha', 'isdigit',
     'toupper', 'tolower', 'swap',
+    'DBL_MAX', 'DBL_MIN', 'FLT_MAX', 'FLT_MIN', 'INT_MAX', 'INT_MIN',
+    'LONG_MAX', 'LONG_MIN', 'ULONG_MAX', 'CHAR_MAX', 'CHAR_MIN',
+    'SIZE_MAX', 'RAND_MAX', 'true', 'false', 'TRUE', 'FALSE',
 }
 
 
@@ -1213,6 +1259,21 @@ class _TACGen:
         if c[0] == 'KEYWORD' and c[1] == 'for':
             self._for_stmt()
             return
+        if c[0] == 'KEYWORD' and c[1] == 'do':
+            self._do_while_stmt()
+            return
+        if c[0] == 'KEYWORD' and c[1] == 'switch':
+            self._switch_stmt()
+            return
+        if c[0] == 'KEYWORD' and c[1] in ('break', 'continue'):
+            self._eat()
+            if self._match('SEMICOLON'):
+                self._eat()
+            return
+        if c[0] == 'KEYWORD' and c[1] in ('case', 'default'):
+            # handled by _switch_stmt; skip if encountered outside
+            self._eat()
+            return
         if c[0] == 'KEYWORD' and c[1] in self.TYPE_KW:
             while self._cur()[0] == 'KEYWORD' and self._cur()[1] in self.TYPE_KW:
                 self._eat()
@@ -1352,6 +1413,139 @@ class _TACGen:
             self.tac.append(upd.strip())
         self.tac.append(f'GOTO {ls}')
         self.tac.append(f'{le}:')
+
+    def _do_while_stmt(self):
+        self._eat()  # do
+        ls = self._nl()
+        le = self._nl()
+        self.tac.append(f'{ls}:')
+        if self._match('LBRACE'):
+            self._block()
+        else:
+            self._stmt()
+        if self._match('KEYWORD', 'while'):
+            self._eat()
+        self._eat()  # (
+        cond = self._cuntil('RPAREN')
+        self._eat()  # )
+        self.tac.append(f'IF_FALSE {cond} GOTO {le}')
+        self.tac.append(f'GOTO {ls}')
+        self.tac.append(f'{le}:')
+        if self._match('SEMICOLON'):
+            self._eat()
+
+    def _switch_stmt(self):
+        self._eat()  # switch
+        self._eat()  # (
+        switch_expr = self._cuntil('RPAREN')
+        self._eat()  # )
+        # save the switch value to a temp
+        tv = self._nt()
+        self.tac.append(f'{tv} = {switch_expr}')
+        self._eat()  # {
+
+        # collect case/default labels before emitting body
+        # We'll generate: compare, conditional jumps, then case bodies
+        lend = self._nl()  # label for break target (end of switch)
+
+        # We need to parse case/default inside the braces and generate TAC
+        # Strategy: generate IF checks at the top, then bodies with labels
+        cases = []  # list of (value_str, label)
+        default_label = None
+        # First, gather all case values and assign labels
+        # But we can't peek ahead easily. Instead, do single-pass:
+        # emit code as we encounter case/default,
+        # replace 'break' with GOTO lend
+
+        # Single-pass approach:
+        # For each case, emit label then body.  Before the switch body,
+        # we emit a jump table.
+
+        # Actually, let's collect cases in one pass through the braces:
+        # We'll save our position, scan ahead for case/default values,
+        # then rewind and generate code.
+
+        # Simpler approach: Convert switch to if-else chain.
+        # Parse the block manually, tracking case values.
+
+        # Parse all cases by scanning the tokens inside { ... }
+        # each case becomes: if (tv == value) goto case_label
+        case_bodies = []  # (value|None, body_tac_list)
+        depth = 1
+        saved_tac = self.tac
+        while depth > 0 and self._cur()[0] != 'EOF':
+            c = self._cur()
+            if c[0] == 'LBRACE':
+                depth += 1
+                self._eat()
+            elif c[0] == 'RBRACE':
+                depth -= 1
+                if depth == 0:
+                    self._eat()
+                    break
+                self._eat()
+            elif c[0] == 'KEYWORD' and c[1] == 'case':
+                self._eat()  # case
+                val = self._cuntil('COLON')
+                self._eat()  # :
+                cl = self._nl()
+                body_tac = []
+                self.tac = body_tac
+                # parse statements until next case/default/}
+                while (self._cur()[0] != 'EOF'
+                       and not (self._cur()[0] == 'KEYWORD' and self._cur()[1] == 'case')
+                       and not (self._cur()[0] == 'KEYWORD' and self._cur()[1] == 'default')
+                       and not (self._cur()[0] == 'RBRACE' and depth == 1)):
+                    if self._cur()[0] == 'KEYWORD' and self._cur()[1] == 'break':
+                        self._eat()
+                        if self._match('SEMICOLON'):
+                            self._eat()
+                        body_tac.append(f'GOTO {lend}')
+                        break
+                    self._stmt()
+                case_bodies.append((val.strip(), cl, body_tac))
+            elif c[0] == 'KEYWORD' and c[1] == 'default':
+                self._eat()  # default
+                if self._match('COLON'):
+                    self._eat()  # :
+                dl = self._nl()
+                default_label = dl
+                body_tac = []
+                self.tac = body_tac
+                while (self._cur()[0] != 'EOF'
+                       and not (self._cur()[0] == 'KEYWORD' and self._cur()[1] == 'case')
+                       and not (self._cur()[0] == 'RBRACE' and depth == 1)):
+                    if self._cur()[0] == 'KEYWORD' and self._cur()[1] == 'break':
+                        self._eat()
+                        if self._match('SEMICOLON'):
+                            self._eat()
+                        body_tac.append(f'GOTO {lend}')
+                        break
+                    self._stmt()
+                case_bodies.append((None, dl, body_tac))
+            else:
+                self._eat()
+
+        # eat closing } if we haven't yet
+        self.tac = saved_tac
+
+        # Emit jump table: if tv == val GOTO label
+        for val, cl, _ in case_bodies:
+            if val is not None:
+                self.tac.append(f'IF_FALSE {tv} == {val} GOTO {cl}_skip')
+                self.tac.append(f'GOTO {cl}')
+                self.tac.append(f'{cl}_skip:')
+        if default_label:
+            self.tac.append(f'GOTO {default_label}')
+        else:
+            self.tac.append(f'GOTO {lend}')
+
+        # Emit case bodies
+        for val, cl, body in case_bodies:
+            self.tac.append(f'{cl}:')
+            self.tac.extend(body)
+
+        self.tac.append(f'{lend}:')
 
     def _collect_expr(self):
         parts = []
