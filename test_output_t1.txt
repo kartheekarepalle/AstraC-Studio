@@ -1,0 +1,27 @@
+CODE: int main() { int a = 1; return a; }
+
+SYNTAX TREE:
+    Program
+       |
+   int main
+       |
+     Block
+       |
+   StmtList
+  /          \
+int a   ReturnStmt
+  |          |
+  1          a
+
+SEMANTIC TREE:
+        Program
+           |
+ int main:returns int
+           |
+         Block
+           |
+       StmtList
+    /              \
+int a:int   ReturnStmt:int
+    |              |
+  1:int          a:int

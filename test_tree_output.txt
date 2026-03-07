@@ -1,0 +1,186 @@
+=== Phase 1: Lexical ===
+Tokens: 76, Errors: []
+
+=== Phase 2: Syntax Tree ===
+                                                                                                          Program
+                                                                                                             |
+                                                                                                   FunctionDef(int main)
+                                                                                                             |
+                                                                                                           Block
+                                                                                                             |
+                                                                                                         StmtList
+     /             /              /                /                   /                    /               \          \                        \                          \                        \                 \
+Decl(int N)   Decl(int i)   Decl(int sum)   Decl(int base)   Decl(int multiplier)   Decl(int offset)    ExprStmt   ExprStmt                  ForStmt               Decl(int result)             ExprStmt         ReturnStmt
+                                                   |                   |                   |                |          |                 /              \                  |                        |                 |
+                                                  10                   4                   *                =          =             ForHeader        Block                +                  Call(printf)            0
+                                                                                      /         \         /   \      /    \         /          \        |              /       \                    |
+                                                                                    base   multiplier     N   5     sum   0      ForInit      ++    StmtList          sum   offset                 Arg
+                                                                                                                                /       \      |        |                                    /             \
+                                                                                                                                =       <      i    ExprStmt                          "Result = %d\n"   result
+                                                                                                                              /   \   /   \             |
+                                                                                                                              i   0   i   N             =
+                                                                                                                                                    /       \
+                                                                                                                                                   sum      +
+                                                                                                                                                          /    \
+                                                                                                                                                         sum   i
+Errors: []
+
+=== Phase 3: Semantic ===
+Symbol Table: [
+  {
+    "name": "main",
+    "type": "int",
+    "kind": "function",
+    "scope": "global",
+    "line": 1
+  },
+  {
+    "name": "N",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 2
+  },
+  {
+    "name": "i",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 2
+  },
+  {
+    "name": "sum",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 2
+  },
+  {
+    "name": "base",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 3
+  },
+  {
+    "name": "multiplier",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 4
+  },
+  {
+    "name": "offset",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 5
+  },
+  {
+    "name": "result",
+    "type": "int",
+    "kind": "variable",
+    "scope": "global",
+    "line": 11
+  }
+]
+Errors: []
+
+=== Phase 4: IR (TAC) ===
+FUNC_BEGIN main
+DECL N
+DECL i
+DECL sum
+base = 10
+multiplier = 4
+t1 = base * multiplier
+offset = t1
+N = 5
+sum = 0
+i = 0
+L1:
+IF_FALSE i < N GOTO L2
+t2 = sum + i
+sum = t2
+i ++
+GOTO L1
+L2:
+t3 = sum + offset
+result = t3
+CALL printf("Result = %d\n" , result)
+RETURN 0
+FUNC_END main
+Errors: []
+
+=== Phase 5: Optimized IR ===
+FUNC_BEGIN main
+DECL N
+DECL i
+DECL sum
+base = 10
+multiplier = 4
+t1 = 40
+offset = 40
+N = 5
+sum = 0
+i = 0
+L1:
+IF_FALSE i < N GOTO L2
+t2 = sum + i
+sum = t2
+i ++
+GOTO L1
+L2:
+t3 = sum + 40
+result = t3
+CALL printf("Result = %d\n" , result)
+RETURN 0
+FUNC_END main
+
+Optimizations Applied (3):
+  [Constant Folding] t1 = base * multiplier -> t1 = 40
+  [Constant Propagation] offset = t1 -> offset = 40
+  [Constant Propagation] t3 = sum + offset -> t3 = sum + 40
+Errors: []
+
+=== Phase 6: Code Generation ===
+; --- function main ---
+main:
+    PUSH BP
+    MOV BP, SP
+    ; declare N
+    SUB SP, 4  ; alloc N
+    ; declare i
+    SUB SP, 4  ; alloc i
+    ; declare sum
+    SUB SP, 4  ; alloc sum
+    MOV base, 10
+    MOV multiplier, 4
+    MOV t1, 40
+    MOV offset, 40
+    MOV N, 5
+    MOV sum, 0
+    MOV i, 0
+L1:
+    CMP i < N, 0
+    JE L2
+    MOV AX, sum
+    ADD AX, i
+    MOV t2, AX
+    MOV sum, t2
+    ; i ++
+    JMP L1
+L2:
+    MOV AX, sum
+    ADD AX, 40
+    MOV t3, AX
+    MOV result, t3
+    PUSH result
+    PUSH "Result = %d\n"
+    CALL printf
+    MOV AX, 0
+    POP BP
+    RET
+    POP BP
+    RET
+Errors: []

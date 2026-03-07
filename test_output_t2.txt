@@ -1,0 +1,35 @@
+CODE: int main() { int x = 2 + 3 * 4; return x; }
+
+SYNTAX TREE:
+       Program
+          |
+      int main
+          |
+        Block
+          |
+      StmtList
+   /             \
+ int x      ReturnStmt
+   |             |
+   +             x
+/     \
+2     *
+    /   \
+    3   4
+
+SEMANTIC TREE:
+                Program
+                   |
+         int main:returns int
+                   |
+                 Block
+                   |
+               StmtList
+        /                      \
+    int x:int           ReturnStmt:int
+        |                      |
+      +:int                  x:int
+  /           \
+2:int       *:int
+          /       \
+        3:int   4:int

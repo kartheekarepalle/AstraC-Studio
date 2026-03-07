@@ -1,0 +1,44 @@
+Status: 200
+
+======================================================================
+  SYNTAX TREE
+======================================================================
+
+                        Program
+                           |
+                       int main
+                           |
+                         Block
+                           |
+                       StmtList
+  /       /        |                 \              \
+int a   int b   int sum          ExprStmt      ReturnStmt
+  |       |        |                 |              |
+  5      10        +              printf            0
+                 /   \               |
+                 a   b              Arg
+                                /         \
+                          "Sum = %d\n"   sum
+
+======================================================================
+  SEMANTIC TREE
+======================================================================
+
+                                      Program
+                                         |
+                               int main:returns int
+                                         |
+                                       Block
+                                         |
+                                     StmtList
+    /           /             |                         \                     \
+int a:int   int b:int    int sum:int                ExprStmt           ReturnStmt:int
+    |           |             |                         |                     |
+  5:int      10:int         +:int                    printf                 0:int
+                          /       \                     |
+                        a:int   b:int                  Arg
+                                                 /              \
+                                        "Sum = %d\n":char*   sum:int
+
+Has visual keys? syntax_tree_visual=False, semantic_tree_visual=False
+Errors: []

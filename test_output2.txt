@@ -1,0 +1,5 @@
+Status: 404
+Response:
+{
+  "detail": "Not Found"
+}

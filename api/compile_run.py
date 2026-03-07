@@ -50,12 +50,60 @@ class TACInterpreter:
                         body_start = j + 1
                     else:
                         break
+                body = self._preprocess_body(self.lines[body_start:end])
                 self.funcs[fname] = {
-                    'body': self.lines[body_start:end],
+                    'body': body,
                     'name': fname,
                     'params': params,
                 }
             i += 1
+
+    # ── pre-process: split comma-separated declarations ──────────────
+    def _preprocess_body(self, body):
+        result = []
+        for line in body:
+            ls = line.strip()
+            if (ls.startswith(('CALL', 'IF_FALSE', 'GOTO', 'RETURN', 'FUNC', 'DECL', 'PARAM'))
+                    or re.match(r'^L\d+:', ls)
+                    or re.match(r'^\w+\s*(\+\+|--)$', ls)
+                    or ',' not in ls):
+                result.append(line)
+                continue
+            parts = self._split_top_commas(ls)
+            if len(parts) > 1 and all(re.match(r'^\w+(\s*=\s*.+)?$', p) for p in parts):
+                result.extend(parts)
+            else:
+                result.append(line)
+        return result
+
+    def _split_top_commas(self, s):
+        parts = []
+        depth = 0
+        in_str = False
+        current = []
+        for ch in s:
+            if ch == '"' and not in_str:
+                in_str = True
+                current.append(ch)
+            elif ch == '"' and in_str:
+                in_str = False
+                current.append(ch)
+            elif in_str:
+                current.append(ch)
+            elif ch in '([':
+                depth += 1
+                current.append(ch)
+            elif ch in ')]':
+                depth -= 1
+                current.append(ch)
+            elif ch == ',' and depth == 0:
+                parts.append(''.join(current).strip())
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            parts.append(''.join(current).strip())
+        return [p for p in parts if p]
 
     # ── run the program (calls main) ─────────────────────────────────
     def run(self):
@@ -395,6 +443,31 @@ class TACInterpreter:
                         vi += 1
                         i += 3
                         continue
+                elif spec == '.' or spec == '-' or spec.isdigit():
+                    # %.Nf, %Nd, %-Nd etc.
+                    j = i + 1
+                    while j < len(fmt) and (fmt[j] in '.-+' or fmt[j].isdigit()):
+                        j += 1
+                    if j < len(fmt) and fmt[j] in 'diouxXfFeEgGcs':
+                        type_ch = fmt[j]
+                        v = vals[vi] if vi < len(vals) else 0
+                        if type_ch in 'fFeEgG':
+                            # extract precision if present
+                            prec_m = re.search(r'\.(\d+)', fmt[i:j])
+                            precision = int(prec_m.group(1)) if prec_m else 6
+                            output.append(f'{float(v):.{precision}f}')
+                        elif type_ch in 'diouxX':
+                            output.append(str(int(v)))
+                        elif type_ch == 'c':
+                            output.append(chr(int(v)))
+                        elif type_ch == 's':
+                            s = str(v)
+                            if s.startswith('"') and s.endswith('"'):
+                                s = s[1:-1]
+                            output.append(s)
+                        vi += 1
+                        i = j + 1
+                        continue
             output.append(fmt[i])
             i += 1
 
@@ -430,6 +503,27 @@ class TACInterpreter:
         # single variable or temp
         if re.match(r'^[a-zA-Z_]\w*$', expr):
             return self._resolve(expr, env)
+
+        # function call: func(...) or func ( ... )
+        fcm = re.match(r'^([a-zA-Z_]\w*)\s*\(', expr)
+        if fcm:
+            fn = fcm.group(1)
+            if fn in self.funcs:
+                open_pos = fcm.end() - 1
+                depth = 0
+                close_pos = -1
+                for pos in range(open_pos, len(expr)):
+                    if expr[pos] == '(':
+                        depth += 1
+                    elif expr[pos] == ')':
+                        depth -= 1
+                        if depth == 0:
+                            close_pos = pos
+                            break
+                if close_pos == len(expr) - 1:
+                    inner = expr[open_pos+1:close_pos].strip()
+                    result = self._handle_call(fn, inner, env)
+                    return result if result is not None else 0
 
         # precedence-aware binary operator split (must come before array access
         # so that "arr [ j ] > arr [ j + 1 ]" splits at ">" not as array access)
@@ -490,11 +584,11 @@ class TACInterpreter:
                 if in_str:
                     i += 1
                     continue
-                if ch == '[':
+                if ch in '([':
                     depth += 1
                     i += 1
                     continue
-                if ch == ']':
+                if ch in ')]':
                     depth -= 1
                     i += 1
                     continue

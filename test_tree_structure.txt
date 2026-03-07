@@ -1,0 +1,85 @@
+{
+  "label": "Program",
+  "left": {
+    "label": "FunctionDef",
+    "value": "int main",
+    "right": {
+      "label": "Block",
+      "left": {
+        "label": "StmtList",
+        "left": {
+          "label": "Decl",
+          "value": "int a",
+          "left": {
+            "label": "Num",
+            "value": "5"
+          }
+        },
+        "right": {
+          "label": "StmtList",
+          "left": {
+            "label": "Decl",
+            "value": "int b",
+            "left": {
+              "label": "Num",
+              "value": "10"
+            }
+          },
+          "right": {
+            "label": "StmtList",
+            "left": {
+              "label": "Decl",
+              "value": "int sum",
+              "left": {
+                "label": "BinOp",
+                "value": "+",
+                "left": {
+                  "label": "Id",
+                  "value": "a"
+                },
+                "right": {
+                  "label": "Id",
+                  "value": "b"
+                }
+              }
+            },
+            "right": {
+              "label": "StmtList",
+              "left": {
+                "label": "ExprStmt",
+                "left": {
+                  "label": "Call",
+                  "value": "printf",
+                  "left": {
+                    "label": "Arg",
+                    "left": {
+                      "label": "Str",
+                      "value": "\"Sum = %d\\n\""
+                    },
+                    "right": {
+                      "label": "Arg",
+                      "left": {
+                        "label": "Id",
+                        "value": "sum"
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "label": "StmtList",
+                "left": {
+                  "label": "ReturnStmt",
+                  "left": {
+                    "label": "Num",
+                    "value": "0"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
