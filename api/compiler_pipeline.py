@@ -1551,15 +1551,63 @@ class _TACGen:
         parts = []
         while self._cur()[0] != 'EOF' and not self._match('SEMICOLON'):
             t = self._cur()
-            if t[0] == 'LPAREN' and parts:
-                last = parts[-1] if parts else ''
-                if isinstance(last, str) and last not in ('+', '-', '*', '/', '%', '=', '<', '>', '!', '&', '|', '('):
-                    fn = parts.pop()
-                    args = self._cargs()
-                    tmp = self._nt()
-                    self.tac.append(f'{tmp} = CALL {fn}({args})')
-                    parts.append(tmp)
-                    continue
+            if t[0] == 'LPAREN':
+                # Function call: identifier followed by (
+                if parts:
+                    last = parts[-1] if parts else ''
+                    if isinstance(last, str) and last not in ('+', '-', '*', '/', '%', '=', '<', '>', '!', '&', '|', '(', '==', '!=', '<=', '>=', '&&', '||'):
+                        fn = parts.pop()
+                        args = self._cargs()
+                        tmp = self._nt()
+                        self.tac.append(f'{tmp} = CALL {fn}({args})')
+                        parts.append(tmp)
+                        continue
+                # Parenthesized subexpression: collect inner tokens, linearize to temp
+                self._eat()  # (
+                inner_parts = []
+                depth = 1
+                while depth > 0 and self._cur()[0] != 'EOF':
+                    if self._cur()[0] == 'LPAREN':
+                        depth += 1
+                    elif self._cur()[0] == 'RPAREN':
+                        depth -= 1
+                        if depth == 0:
+                            self._eat()  # )
+                            break
+                    # Handle array subscript inside parens
+                    if self._cur()[0] == 'LBRACK' and inner_parts:
+                        last_inner = inner_parts[-1] if inner_parts else ''
+                        if isinstance(last_inner, str) and re.match(r'^[a-zA-Z_]\w*$', str(last_inner)):
+                            arr_name = inner_parts.pop()
+                            self._eat()  # [
+                            idx_parts = []
+                            bdepth = 1
+                            while bdepth > 0 and self._cur()[0] != 'EOF':
+                                if self._cur()[0] == 'LBRACK':
+                                    bdepth += 1
+                                elif self._cur()[0] == 'RBRACK':
+                                    bdepth -= 1
+                                    if bdepth == 0:
+                                        self._eat()  # ]
+                                        break
+                                idx_parts.append(self._cur()[1])
+                                self._eat()
+                            idx_expr = ' '.join(idx_parts)
+                            inner_parts.append(f'{arr_name} [ {idx_expr} ]')
+                            continue
+                    inner_parts.append(self._cur()[1])
+                    self._eat()
+                if len(inner_parts) >= 3:
+                    result = self._linearize(inner_parts)
+                    if not re.match(r'^t\d+$', result):
+                        tmp = self._nt()
+                        self.tac.append(f'{tmp} = {result}')
+                        parts.append(tmp)
+                    else:
+                        parts.append(result)
+                elif inner_parts:
+                    parts.append(' '.join(str(p) for p in inner_parts))
+                continue
             # Handle array subscript: arr[index] as a single operand
             if t[0] == 'LBRACK' and parts:
                 last = parts[-1] if parts else ''
